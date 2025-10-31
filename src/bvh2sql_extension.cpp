@@ -1,21 +1,6 @@
-/*
- * BVH to Absolute Position Converter for DuckDB
- * ==============================================
- * 
- * BVHの相対位置データを絶対位置（ワールド座標）に変換してテーブル化
- * 
- * 提供する関数:
- * 1. bvh_absolute_positions(file) - 各ジョイントの絶対位置を計算
- * 2. bvh_rotations(file) - 各ジョイントの回転角度
- * 3. bvh_transform_matrix(file, joint, frame) - 変換行列を取得
- * 
- * 使い方:
- * SELECT * FROM bvh_absolute_positions('motion.bvh');
- * 
- * 出力:
- * frame_id | time | joint_name | world_x | world_y | world_z | rot_x | rot_y | rot_z
- */
+#define DUCKDB_EXTENSION_MAIN
 
+#include "bvh2sql_extension.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -30,8 +15,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-
-using namespace duckdb;
 
 namespace bvh_absolute {
 
@@ -205,9 +188,14 @@ private:
     BVHData data_;
     std::string error_;
     
+    // CRLF/LFの両方に対応したtrim関数
     std::string trim(const std::string& str) {
-        auto start = std::find_if_not(str.begin(), str.end(), ::isspace);
-        auto end = std::find_if_not(str.rbegin(), str.rend(), ::isspace).base();
+        auto start = std::find_if_not(str.begin(), str.end(), [](unsigned char ch) {
+            return std::isspace(ch) || ch == '\r' || ch == '\n' || ch == '\t';
+        });
+        auto end = std::find_if_not(str.rbegin(), str.rend(), [](unsigned char ch) {
+            return std::isspace(ch) || ch == '\r' || ch == '\n' || ch == '\t';
+        }).base();
         return (start < end) ? std::string(start, end) : std::string();
     }
     
@@ -215,7 +203,12 @@ private:
         std::vector<std::string> result;
         std::istringstream iss(str);
         std::string token;
-        while (iss >> token) result.push_back(token);
+        while (iss >> token) {
+            // トークンが空でないことを確認
+            if (!token.empty()) {
+                result.push_back(token);
+            }
+        }
         return result;
     }
     
@@ -236,17 +229,23 @@ private:
         auto tokens = split(trim(line));
         if (tokens.size() < 2) return nullptr;
         
+        // ROOT or JOINT
+        std::string joint_type = tokens[0];
         Joint* joint = new Joint(tokens[1], parent);
         data_.joint_list.push_back(joint);
         
         if (!std::getline(stream, line) || trim(line) != "{") {
-            error_ = "Expected {";
+            error_ = "Expected { after " + joint->name;
             return nullptr;
         }
         
         while (std::getline(stream, line)) {
             auto trimmed = trim(line);
-            if (trimmed == "}") break;
+            
+            // この階層の終わり
+            if (trimmed == "}") {
+                return joint;
+            }
             
             tokens = split(trimmed);
             if (tokens.empty()) continue;
@@ -264,23 +263,32 @@ private:
                 }
             }
             else if (tokens[0] == "JOINT") {
+                // 再帰的に子ジョイントをパース
                 Joint* child = parseJoint(stream, joint);
-                if (child) joint->children.push_back(std::unique_ptr<Joint>(child));
+                if (child) {
+                    joint->children.push_back(std::unique_ptr<Joint>(child));
+                }
             }
             else if (tokens[0] == "End" && tokens.size() >= 2 && tokens[1] == "Site") {
                 parseEndSite(stream, joint);
             }
         }
         
-        return joint;
+        error_ = "Unexpected end of file in joint: " + joint->name;
+        return nullptr;
     }
     
     void parseEndSite(std::istream& stream, Joint* parent) {
         std::string line;
+        
+        // { を読み飛ばす
         if (!std::getline(stream, line)) return;
         
+        // End Site の内容を読む
         while (std::getline(stream, line)) {
-            if (trim(line) == "}") break;
+            if (trim(line) == "}") {
+                return;
+            }
         }
     }
     
@@ -295,8 +303,15 @@ private:
     bool parseMotion(std::istream& stream) {
         std::string line;
         
-        if (!std::getline(stream, line) || trim(line) != "MOTION") {
-            error_ = "Expected MOTION";
+        // MOTIONを探す
+        while (std::getline(stream, line)) {
+            if (trim(line) == "MOTION") {
+                break;
+            }
+        }
+        
+        if (stream.eof()) {
+            error_ = "Expected MOTION section";
             return false;
         }
         
@@ -314,7 +329,12 @@ private:
             error_ = "Expected Frame Time:";
             return false;
         }
-        data_.frame_time = std::stod(tokens[2]);
+        // 先頭にピリオドがある場合に対応 (.0083333 -> 0.0083333)
+        std::string time_str = tokens[2];
+        if (!time_str.empty() && time_str[0] == '.') {
+            time_str = "0" + time_str;
+        }
+        data_.frame_time = std::stod(time_str);
         
         data_.motion_data.resize(data_.num_frames);
         for (int i = 0; i < data_.num_frames; ++i) {
@@ -437,82 +457,89 @@ static std::shared_ptr<BVHData> getOrParseBVH(const std::string& filename) {
     
     BVHParser parser;
     if (!parser.parse(filename)) {
-        throw IOException("Failed to parse BVH file: " + parser.getError());
+        throw duckdb::IOException("Failed to parse BVH file: " + parser.getError());
     }
     
-    auto data = std::make_shared<BVHData>(parser.getData());
+    // BVHDataを新しく作成してmoveで転送
+    auto data = std::make_shared<BVHData>();
+    *data = std::move(const_cast<BVHData&>(parser.getData()));
     bvh_cache[filename] = data;
     return data;
 }
 
-struct AbsolutePositionBindData : public TableFunctionData {
+struct AbsolutePositionBindData : public duckdb::TableFunctionData {
     std::string filename;
     std::shared_ptr<BVHData> bvh_data;
 };
 
-struct AbsolutePositionGlobalState : public GlobalTableFunctionState {
-    idx_t current_row;
+struct AbsolutePositionGlobalState : public duckdb::GlobalTableFunctionState {
+    duckdb::idx_t current_row;
     AbsolutePositionGlobalState() : current_row(0) {}
-    idx_t MaxThreads() const override { return 1; }
+    duckdb::idx_t MaxThreads() const override { return 1; }
 };
 
-static unique_ptr<FunctionData> AbsolutePositionBind(ClientContext &context, 
-                                                      TableFunctionBindInput &input,
-                                                      vector<LogicalType> &return_types, 
-                                                      vector<string> &names) {
-    auto result = make_uniq<AbsolutePositionBindData>();
+static duckdb::unique_ptr<duckdb::FunctionData> AbsolutePositionBind(
+    duckdb::ClientContext &context, 
+    duckdb::TableFunctionBindInput &input,
+    duckdb::vector<duckdb::LogicalType> &return_types, 
+    duckdb::vector<duckdb::string> &names) {
+    
+    auto result = duckdb::make_uniq<AbsolutePositionBindData>();
     
     if (input.inputs.empty()) {
-        throw InvalidInputException("bvh_absolute_positions requires a filename argument");
+        throw duckdb::InvalidInputException("bvh_absolute_positions requires a filename argument");
     }
     
     result->filename = input.inputs[0].ToString();
     result->bvh_data = getOrParseBVH(result->filename);
     
     names.emplace_back("frame_id");
-    return_types.emplace_back(LogicalType::INTEGER);
+    return_types.emplace_back(duckdb::LogicalType::INTEGER);
     
     names.emplace_back("time");
-    return_types.emplace_back(LogicalType::DOUBLE);
+    return_types.emplace_back(duckdb::LogicalType::DOUBLE);
     
     names.emplace_back("joint_name");
-    return_types.emplace_back(LogicalType::VARCHAR);
+    return_types.emplace_back(duckdb::LogicalType::VARCHAR);
     
     names.emplace_back("world_x");
-    return_types.emplace_back(LogicalType::DOUBLE);
+    return_types.emplace_back(duckdb::LogicalType::DOUBLE);
     
     names.emplace_back("world_y");
-    return_types.emplace_back(LogicalType::DOUBLE);
+    return_types.emplace_back(duckdb::LogicalType::DOUBLE);
     
     names.emplace_back("world_z");
-    return_types.emplace_back(LogicalType::DOUBLE);
+    return_types.emplace_back(duckdb::LogicalType::DOUBLE);
     
     names.emplace_back("rot_x");
-    return_types.emplace_back(LogicalType::DOUBLE);
+    return_types.emplace_back(duckdb::LogicalType::DOUBLE);
     
     names.emplace_back("rot_y");
-    return_types.emplace_back(LogicalType::DOUBLE);
+    return_types.emplace_back(duckdb::LogicalType::DOUBLE);
     
     names.emplace_back("rot_z");
-    return_types.emplace_back(LogicalType::DOUBLE);
+    return_types.emplace_back(duckdb::LogicalType::DOUBLE);
     
     return std::move(result);
 }
 
-static unique_ptr<GlobalTableFunctionState> AbsolutePositionInit(ClientContext &context, 
-                                                                  TableFunctionInitInput &input) {
-    return make_uniq<AbsolutePositionGlobalState>();
+static duckdb::unique_ptr<duckdb::GlobalTableFunctionState> AbsolutePositionInit(
+    duckdb::ClientContext &context, 
+    duckdb::TableFunctionInitInput &input) {
+    return duckdb::make_uniq<AbsolutePositionGlobalState>();
 }
 
-static void AbsolutePositionFunction(ClientContext &context, 
-                                     TableFunctionInput &data_p, 
-                                     DataChunk &output) {
+static void AbsolutePositionFunction(
+    duckdb::ClientContext &context, 
+    duckdb::TableFunctionInput &data_p, 
+    duckdb::DataChunk &output) {
+    
     auto &bind_data = data_p.bind_data->Cast<AbsolutePositionBindData>();
     auto &state = data_p.global_state->Cast<AbsolutePositionGlobalState>();
     
     const auto &bvh = *bind_data.bvh_data;
     
-    idx_t total_rows = bvh.num_frames * bvh.joint_list.size();
+    duckdb::idx_t total_rows = bvh.num_frames * bvh.joint_list.size();
     
     if (state.current_row >= total_rows) {
         output.SetCardinality(0);
@@ -521,24 +548,24 @@ static void AbsolutePositionFunction(ClientContext &context,
     
     AbsolutePositionCalculator calculator(bvh);
     
-    idx_t count = 0;
-    idx_t max_rows = STANDARD_VECTOR_SIZE;
+    duckdb::idx_t count = 0;
+    duckdb::idx_t max_rows = STANDARD_VECTOR_SIZE;
     
-    auto frame_id_data = FlatVector::GetData<int32_t>(output.data[0]);
-    auto time_data = FlatVector::GetData<double>(output.data[1]);
-    auto joint_name_data = FlatVector::GetData<string_t>(output.data[2]);
-    auto world_x_data = FlatVector::GetData<double>(output.data[3]);
-    auto world_y_data = FlatVector::GetData<double>(output.data[4]);
-    auto world_z_data = FlatVector::GetData<double>(output.data[5]);
-    auto rot_x_data = FlatVector::GetData<double>(output.data[6]);
-    auto rot_y_data = FlatVector::GetData<double>(output.data[7]);
-    auto rot_z_data = FlatVector::GetData<double>(output.data[8]);
+    auto frame_id_data = duckdb::FlatVector::GetData<int32_t>(output.data[0]);
+    auto time_data = duckdb::FlatVector::GetData<double>(output.data[1]);
+    auto joint_name_data = duckdb::FlatVector::GetData<duckdb::string_t>(output.data[2]);
+    auto world_x_data = duckdb::FlatVector::GetData<double>(output.data[3]);
+    auto world_y_data = duckdb::FlatVector::GetData<double>(output.data[4]);
+    auto world_z_data = duckdb::FlatVector::GetData<double>(output.data[5]);
+    auto rot_x_data = duckdb::FlatVector::GetData<double>(output.data[6]);
+    auto rot_y_data = duckdb::FlatVector::GetData<double>(output.data[7]);
+    auto rot_z_data = duckdb::FlatVector::GetData<double>(output.data[8]);
     
     while (count < max_rows && state.current_row < total_rows) {
         int frame_id = state.current_row / bvh.joint_list.size();
         int joint_idx = state.current_row % bvh.joint_list.size();
         
-        // このフレームの絶対位置を計算（キャッシュ可能）
+        // このフレームの絶対位置を計算
         auto transforms = calculator.calculateFrame(frame_id);
         
         const Joint* joint = bvh.joint_list[joint_idx];
@@ -546,7 +573,7 @@ static void AbsolutePositionFunction(ClientContext &context,
         
         frame_id_data[count] = frame_id;
         time_data[count] = frame_id * bvh.frame_time;
-        joint_name_data[count] = StringVector::AddString(output.data[2], joint->name);
+        joint_name_data[count] = duckdb::StringVector::AddString(output.data[2], joint->name);
         world_x_data[count] = transform.world_x;
         world_y_data[count] = transform.world_y;
         world_z_data[count] = transform.world_z;
@@ -564,30 +591,69 @@ static void AbsolutePositionFunction(ClientContext &context,
 } // namespace bvh_absolute
 
 // =============================================================================
-// Extension Entry Point
+// Extension Class Implementation
+// =============================================================================
+
+namespace duckdb {
+
+void Bvh2sqlExtension::Load(ExtensionLoader &loader) {
+    // bvh_absolute_positions関数を登録
+    loader.RegisterFunction(TableFunction(
+        "bvh_absolute_positions", 
+        {LogicalType::VARCHAR}, 
+        bvh_absolute::AbsolutePositionFunction, 
+        bvh_absolute::AbsolutePositionBind, 
+        bvh_absolute::AbsolutePositionInit
+    ));
+}
+
+std::string Bvh2sqlExtension::Name() {
+    return "bvh2sql";
+}
+
+std::string Bvh2sqlExtension::Version() const {
+#ifdef EXT_VERSION_BVH2SQL
+    return EXT_VERSION_BVH2SQL;
+#else
+    return "1.0.0";
+#endif
+}
+
+} // namespace duckdb
+
+// =============================================================================
+// C Extension Entry Points
 // =============================================================================
 
 extern "C" {
 
+DUCKDB_EXTENSION_API void bvh2sql_duckdb_cpp_init(duckdb::ExtensionLoader &loader) {
+    duckdb::Bvh2sqlExtension ext;
+    ext.Load(loader);
+}
+
 DUCKDB_EXTENSION_API void bvh2sql_init(duckdb::DatabaseInstance &db) {
-    Connection con(db);
+    duckdb::Connection con(db);
     con.BeginTransaction();
     
-    auto &catalog = Catalog::GetSystemCatalog(*con.context);
+    auto &catalog = duckdb::Catalog::GetSystemCatalog(*con.context);
     
     // bvh_absolute_positions関数を登録
-    TableFunction absolute_func("bvh_absolute_positions", {LogicalType::VARCHAR}, 
-                                bvh_absolute::AbsolutePositionFunction, 
-                                bvh_absolute::AbsolutePositionBind, 
-                                bvh_absolute::AbsolutePositionInit);
-    CreateTableFunctionInfo absolute_info(absolute_func);
+    duckdb::TableFunction absolute_func(
+        "bvh_absolute_positions", 
+        {duckdb::LogicalType::VARCHAR}, 
+        bvh_absolute::AbsolutePositionFunction, 
+        bvh_absolute::AbsolutePositionBind, 
+        bvh_absolute::AbsolutePositionInit
+    );
+    duckdb::CreateTableFunctionInfo absolute_info(absolute_func);
     catalog.CreateTableFunction(*con.context, absolute_info);
     
     con.Commit();
 }
 
 DUCKDB_EXTENSION_API const char *bvh2sql_version() {
-    return "1.0.0";
+    return duckdb::DuckDB::LibraryVersion();
 }
 
 }

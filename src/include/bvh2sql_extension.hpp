@@ -4,7 +4,7 @@
 
 namespace duckdb {
 
-class MiniplotExtension : public Extension {
+class Bvh2sqlExtension : public Extension {
 public:
 	void Load(ExtensionLoader &loader) override;
 	std::string Name() override;

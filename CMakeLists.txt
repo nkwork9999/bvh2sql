@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.5...3.29)
 
+# バージョン情報を明示的に設定
+if(NOT DEFINED OVERRIDE_GIT_DESCRIBE)
+    set(OVERRIDE_GIT_DESCRIBE "v1.4.1-0-g0123456789" CACHE STRING "Git describe override")
+endif()
+
 set(TARGET_NAME bvh2sql)  # ← miniplot から変更
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
