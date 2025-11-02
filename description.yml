@@ -1,7 +1,7 @@
 extension:
-  name: miniplot
-  description: Replace pandas + matplotlib with just DuckDB - instant data visualization from SQL
-  version: 0.0.1
+  name: bvh2sql
+  description: BVH (BioVision Hierarchy) motion capture file parser for DuckDB
+  version: 1.0.0
   language: C++
   build: cmake
   license: MIT
@@ -9,50 +9,44 @@ extension:
     - nkwork9999
 
 repo:
-  github: nkwork9999/miniplot
+  github: your_username/bvh2sql
   ref: main
 
 docs:
   hello_world: |
-    SELECT bar_chart(
-        LIST_VALUE('Q1', 'Q2', 'Q3', 'Q4'),
-        LIST_VALUE(100, 150, 200, 180),
-        'Quarterly Sales'
-    );
-  extended_description: |
-    Interactive chart visualization extension for DuckDB - bringing pandas + matplotlib 
-    style data visualization directly to SQL, without leaving your database.
-    
-    **Mission: Replace pandas + matplotlib with just DuckDB**
-    
-    No more switching between pandas and matplotlib for data visualization.
-    One tool. One query. Instant visualization.
-    
-    **Features:**
-    - Bar, Line, Scatter, and Area charts
-    - Native GUI rendering using Rust/Iced
-    - Simple SQL interface for direct visualization
-    - Cross-platform support (macOS, Linux, Windows)
-    
-    **Architecture:**
-    - C++ Extension for DuckDB interface
-    - Rust FFI Library for data processing
-    - Iced Application for native chart rendering
-    
-    **Example Usage:**
-```sql
-    -- Line chart
-    SELECT line_chart(
-        LIST_VALUE('Jan', 'Feb', 'Mar', 'Apr', 'May'),
-        LIST_VALUE(5.2, 7.1, 12.5, 15.8, 20.3),
-        'Monthly Temperature'
-    );
-    
-    -- Scatter plot
-    SELECT scatter_chart(
-        LIST_VALUE(1.0, 2.0, 3.0, 4.0, 5.0),
-        LIST_VALUE(2.5, 5.0, 7.5, 10.0, 12.5),
-        'Correlation Analysis'
-    );
+    -- Load the extension
+    LOAD bvh2sql;
 
-Note: Requires graphical environment. Charts open in separate native windows.
+    -- Read BVH file and get absolute joint positions
+    SELECT frame_id, time, joint_name, world_x, world_y, world_z
+    FROM bvh_absolute_positions('motion.bvh')
+    WHERE joint_name = 'Hips'
+    LIMIT 10;
+
+    -- Analyze joint movement over time
+    SELECT 
+      joint_name,
+      AVG(world_y) as avg_height,
+      MAX(world_y) - MIN(world_y) as height_range
+    FROM bvh_absolute_positions('motion.bvh')
+    GROUP BY joint_name
+    ORDER BY avg_height DESC;
+
+  extended_description: |
+    The BVH2SQL extension allows you to read BioVision Hierarchy (BVH) motion capture files
+    directly into DuckDB for analysis and processing.
+
+    **Features:**
+    - Parse BVH hierarchy structure with joint offsets
+    - Calculate absolute world positions for all joints using matrix transformations
+    - Support for position channels (Xposition, Yposition, Zposition)
+    - Support for rotation channels (Xrotation, Yrotation, Zrotation)
+    - Efficient frame-by-frame processing
+    - Returns data as a standard SQL table with columns: frame_id, time, joint_name, world_x, world_y, world_z, rot_x, rot_y, rot_z
+
+    **Use Cases:**
+    - Motion capture data analysis
+    - Animation retargeting preparation
+    - Character movement statistics
+    - Biomechanics research
+    - Game development data pipeline
