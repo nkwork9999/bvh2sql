@@ -5,7 +5,7 @@ if(NOT DEFINED OVERRIDE_GIT_DESCRIBE)
     set(OVERRIDE_GIT_DESCRIBE "v1.4.1-0-g0123456789" CACHE STRING "Git describe override")
 endif()
 
-set(TARGET_NAME bvh2sql)  # ← miniplot から変更
+set(TARGET_NAME bvh2sql)
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
@@ -13,19 +13,20 @@ project(${TARGET_NAME})
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# OpenSSLを検索（コミュニティ提出のため残す）
-find_package(OpenSSL REQUIRED)
+# OpenSSL is not required for BVH parsing
+# find_package(OpenSSL REQUIRED)
 
-set(EXTENSION_SOURCES src/bvh2sql_extension.cpp)  # ← ファイル名を変更
+set(EXTENSION_SOURCES src/bvh2sql_extension.cpp)
 
-include_directories(src/include ${OPENSSL_INCLUDE_DIR})
+include_directories(src/include)
+# include_directories(src/include ${OPENSSL_INCLUDE_DIR})
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
-# OpenSSLをリンク（コミュニティ提出のため残す）
-target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
-target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
+# OpenSSL linking removed - not required for BVH parsing
+# target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
+# target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
 
 install(
   TARGETS ${EXTENSION_NAME}
