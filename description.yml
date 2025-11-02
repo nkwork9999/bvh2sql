@@ -9,8 +9,8 @@ extension:
     - nkwork9999
 
 repo:
-  github: your_username/bvh2sql
-  ref: main
+  github: nkwork9999/bvh2sql
+  ref: 2049f108b4aa083f96556f0f65ac1168f678a58d
 
 docs:
   hello_world: |
