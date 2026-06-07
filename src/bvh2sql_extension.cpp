@@ -229,15 +229,21 @@ private:
     Joint* parseJoint(std::istream& stream, Joint* parent) {
         std::string line;
         if (!std::getline(stream, line)) return nullptr;
-        
+
         auto tokens = split(trim(line));
-        if (tokens.size() < 2) return nullptr;
-        
+        return parseJoint(stream, parent, tokens);
+    }
+
+    Joint* parseJoint(std::istream& stream, Joint* parent,
+                      const std::vector<std::string>& initial_tokens) {
+        if (initial_tokens.size() < 2) return nullptr;
+
         // ROOT or JOINT
-        std::string joint_type = tokens[0];
-        Joint* joint = new Joint(tokens[1], parent);
+        std::string joint_type = initial_tokens[0];
+        Joint* joint = new Joint(initial_tokens[1], parent);
         data_.joint_list.push_back(joint);
-        
+
+        std::string line;
         if (!std::getline(stream, line) || trim(line) != "{") {
             error_ = "Expected { after " + joint->name;
             return nullptr;
@@ -251,7 +257,7 @@ private:
                 return joint;
             }
             
-            tokens = split(trimmed);
+            auto tokens = split(trimmed);
             if (tokens.empty()) continue;
             
             if (tokens[0] == "OFFSET" && tokens.size() >= 4) {
@@ -267,8 +273,9 @@ private:
                 }
             }
             else if (tokens[0] == "JOINT") {
-                // 再帰的に子ジョイントをパース
-                Joint* child = parseJoint(stream, joint);
+                // The parent has already consumed the `JOINT name` line.
+                // Reuse those tokens so the child parser reads the following `{`.
+                Joint* child = parseJoint(stream, joint, tokens);
                 if (child) {
                     joint->children.push_back(std::unique_ptr<Joint>(child));
                 }
@@ -398,6 +405,7 @@ private:
         AbsoluteTransform transform;
         double pos_x = 0, pos_y = 0, pos_z = 0;
         double rot_x = 0, rot_y = 0, rot_z = 0;
+        Matrix4x4 rotation_transform;
         
         for (size_t i = 0; i < joint->channels.size(); ++i) {
             int data_index = joint->channel_start_index + i;
@@ -407,21 +415,24 @@ private:
                 case ChannelType::XPOSITION: pos_x = value; break;
                 case ChannelType::YPOSITION: pos_y = value; break;
                 case ChannelType::ZPOSITION: pos_z = value; break;
-                case ChannelType::XROTATION: rot_x = value; break;
-                case ChannelType::YROTATION: rot_y = value; break;
-                case ChannelType::ZROTATION: rot_z = value; break;
+                case ChannelType::XROTATION:
+                    rot_x = value;
+                    rotation_transform = rotation_transform * Matrix4x4::rotationX(value);
+                    break;
+                case ChannelType::YROTATION:
+                    rot_y = value;
+                    rotation_transform = rotation_transform * Matrix4x4::rotationY(value);
+                    break;
+                case ChannelType::ZROTATION:
+                    rot_z = value;
+                    rotation_transform = rotation_transform * Matrix4x4::rotationZ(value);
+                    break;
             }
         }
         
-        // 位置チャンネルがあれば追加の平行移動
-        if (pos_x != 0 || pos_y != 0 || pos_z != 0) {
-            local_transform = local_transform * Matrix4x4::translation(pos_x, pos_y, pos_z);
-        }
-        
-        // 回転を適用（BVHの標準的な順序: Z, X, Y）
-        if (rot_z != 0) local_transform = local_transform * Matrix4x4::rotationZ(rot_z);
-        if (rot_x != 0) local_transform = local_transform * Matrix4x4::rotationX(rot_x);
-        if (rot_y != 0) local_transform = local_transform * Matrix4x4::rotationY(rot_y);
+        local_transform = local_transform *
+                          Matrix4x4::translation(pos_x, pos_y, pos_z) *
+                          rotation_transform;
         
         // ワールド変換 = 親の変換 × ローカル変換
         Matrix4x4 world_transform = parent_transform * local_transform;

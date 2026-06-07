@@ -93,7 +93,7 @@ BVH files store joint positions as **relative offsets** from parent joints. This
 1. Parses the hierarchical structure
 2. Reads motion data frame by frame
 3. Calculates **absolute world positions** using 4x4 transformation matrices
-4. Applies translations and rotations (Z → X → Y order)
+4. Applies translations and rotations in the order declared by each joint's BVH `CHANNELS`
 5. Returns data as a standard SQL table
 
 ## License

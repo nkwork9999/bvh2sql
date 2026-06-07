@@ -1,0 +1,23 @@
+# name: test/sql/bvh2sql.test
+# description: test bvh2sql extension
+# group: [sql]
+
+# Require statement will ensure this test is run with this extension loaded
+require bvh2sql
+
+# The bundled CMU sample contains ROOT Hips + 30 JOINT declarations and
+# 2752 frames, so absolute positions should expose every joint for every frame.
+query III
+SELECT COUNT(*)::INTEGER AS rows,
+       COUNT(DISTINCT frame_id)::INTEGER AS frames,
+       COUNT(DISTINCT joint_name)::INTEGER AS joints
+FROM bvh_absolute_positions('01_01.bvh');
+----
+85312	2752	31
+
+query I
+SELECT COUNT(*)::INTEGER
+FROM bvh_absolute_positions('01_01.bvh')
+WHERE joint_name IN ('Hips', 'Head', 'LeftHand', 'RightFoot');
+----
+11008
