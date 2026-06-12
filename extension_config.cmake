@@ -10,7 +10,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # VS 2026 no longer provides stdext::checked_array_iterator, but the fmt copy
 # bundled with DuckDB v1.5.3 still references it when _SECURE_SCL is defined.
 if(MSVC)
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/U_SECURE_SCL>)
+    set(BVH2SQL_MSVC_COMPAT_HEADER "${CMAKE_CURRENT_LIST_DIR}/src/include/bvh2sql/msvc_secure_scl_compat.hpp")
+    string(REPLACE "\\" "/" BVH2SQL_MSVC_COMPAT_HEADER "${BVH2SQL_MSVC_COMPAT_HEADER}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /U_SECURE_SCL /FI${BVH2SQL_MSVC_COMPAT_HEADER}")
 endif()
 
 # Extension from this repo
